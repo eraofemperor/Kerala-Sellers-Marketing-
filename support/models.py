@@ -65,11 +65,12 @@ class SupportConversation(models.Model):
     LANGUAGE_CHOICES = [
         ('en', 'English'),
         ('ml', 'Malayalam'),
+        ('mixed', 'Mixed'),
     ]
-    
+
     session_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     user_id = models.CharField(max_length=100)
-    language = models.CharField(max_length=2, choices=LANGUAGE_CHOICES, default='en')
+    language = models.CharField(max_length=5, choices=LANGUAGE_CHOICES, default='en')
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     message_count = models.IntegerField(default=0)
@@ -88,7 +89,7 @@ class SupportMessage(models.Model):
         ('user', 'User'),
         ('ai', 'AI'),
     ]
-    
+
     QUERY_TYPE_CHOICES = [
         ('order_status', 'Order Status'),
         ('return_refund', 'Return/Refund'),
@@ -96,12 +97,13 @@ class SupportMessage(models.Model):
         ('general', 'General'),
         ('escalation', 'Escalation'),
     ]
-    
+
     LANGUAGE_CHOICES = [
         ('en', 'English'),
         ('ml', 'Malayalam'),
+        ('mixed', 'Mixed'),
     ]
-    
+
     conversation = models.ForeignKey(
         SupportConversation,
         on_delete=models.CASCADE,
@@ -109,7 +111,7 @@ class SupportMessage(models.Model):
     )
     sender = models.CharField(max_length=10, choices=SENDER_CHOICES)
     message = models.TextField()
-    language_detected = models.CharField(max_length=2, choices=LANGUAGE_CHOICES)
+    language_detected = models.CharField(max_length=5, choices=LANGUAGE_CHOICES)
     query_type = models.CharField(max_length=20, choices=QUERY_TYPE_CHOICES)
     ai_confidence = models.FloatField(null=True, blank=True, help_text="AI confidence score (0-1)")
     created_at = models.DateTimeField(auto_now_add=True)
