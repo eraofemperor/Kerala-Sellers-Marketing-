@@ -152,6 +152,7 @@ REST_FRAMEWORK = {
         'rest_framework.renderers.JSONRenderer',
         'rest_framework.renderers.BrowsableAPIRenderer',
     ],
+    'COERCE_DECIMAL_TO_STRING': False,
 }
 
 # Logging Configuration
