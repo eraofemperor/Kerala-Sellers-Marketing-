@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.core.cache import cache
 from .models import Order, ReturnRequest, SupportConversation, SupportMessage, Policy
 
 
@@ -106,3 +107,29 @@ class PolicyAdmin(admin.ModelAdmin):
             'fields': ('created_at', 'updated_at')
         }),
     )
+    
+    def save_model(self, request, obj, form, change):
+        """
+        Override save_model to invalidate cache when policy is updated.
+        """
+        super().save_model(request, obj, form, change)
+        
+        # Invalidate specific policy cache
+        cache_key = f'policy_{obj.policy_type}'
+        cache.delete(cache_key)
+        
+        # Invalidate policy list cache
+        cache.delete('policy_list')
+        
+    def delete_model(self, request, obj):
+        """
+        Override delete_model to invalidate cache when policy is deleted.
+        """
+        # Invalidate specific policy cache before deletion
+        cache_key = f'policy_{obj.policy_type}'
+        cache.delete(cache_key)
+        
+        # Invalidate policy list cache
+        cache.delete('policy_list')
+        
+        super().delete_model(request, obj)

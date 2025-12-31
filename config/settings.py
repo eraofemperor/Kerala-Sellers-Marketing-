@@ -155,6 +155,19 @@ REST_FRAMEWORK = {
     'COERCE_DECIMAL_TO_STRING': False,
 }
 
+# Cache Configuration
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'policy-cache',
+        'TIMEOUT': 300,  # 5 minutes cache timeout
+        'OPTIONS': {
+            'MAX_ENTRIES': 1000,
+            'CULL_FREQUENCY': 3,
+        }
+    }
+}
+
 # Logging Configuration
 LOGGING = {
     'version': 1,
