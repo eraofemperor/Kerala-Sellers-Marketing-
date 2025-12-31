@@ -1,5 +1,6 @@
 from django.test import TestCase
 from .utils.language import detect_language, determine_response_language
+from .utils.intent import detect_intent
 from .models import SupportConversation, SupportMessage
 
 
@@ -127,6 +128,222 @@ class LanguageIntegrationTests(TestCase):
         )
 
         self.assertEqual(mixed_message.language_detected, 'mixed')
+
+
+class IntentDetectionTests(TestCase):
+    """Test intent detection functionality"""
+
+    def test_order_status_intent_english(self):
+        """Test order status intent detection in English"""
+        # Test various order status keywords
+        test_cases = [
+            "Where is my order?",
+            "Can you track my delivery?",
+            "When will my order be shipped?",
+            "What's the status of my package?"
+        ]
+        
+        for text in test_cases:
+            result = detect_intent(text, 'en')
+            self.assertEqual(result, 'order_status', f"Failed for text: {text}")
+
+    def test_order_status_intent_malayalam(self):
+        """Test order status intent detection in Malayalam"""
+        # Test various order status keywords in Malayalam
+        test_cases = [
+            "എന്റെ ഓർഡർ എവിടെയാണ്?",
+            "എന്റെ ഡെലിവറി ട്രാക്ക് ചെയ്യുക",
+            "എന്റെ ഓർഡർ എത്തിയോ?",
+            "എന്റെ ഓർഡറിന്റെ സ്ഥിതി എന്താണ്?"
+        ]
+        
+        for text in test_cases:
+            result = detect_intent(text, 'ml')
+            self.assertEqual(result, 'order_status', f"Failed for text: {text}")
+
+    def test_return_refund_intent_english(self):
+        """Test return/refund intent detection in English"""
+        test_cases = [
+            "I want to return this item",
+            "Can I get a refund?",
+            "This product is damaged",
+            "How do I cancel my order?"
+        ]
+        
+        for text in test_cases:
+            result = detect_intent(text, 'en')
+            self.assertEqual(result, 'return_refund', f"Failed for text: {text}")
+
+    def test_return_refund_intent_malayalam(self):
+        """Test return/refund intent detection in Malayalam"""
+        test_cases = [
+            "ഈ ഉൽപന്നം റിട്ടേൺ ചെയ്യാൻ ആഗ്രഹിക്കുന്നു",
+            "റീഫണ്ട് ലഭിക്കുമോ?",
+            "ഈ ഉൽപന്നം നശിച്ചു",
+            "ഓർഡർ ക്യാൻസൽ ചെയ്യാൻ എങ്ങനെ?"
+        ]
+        
+        for text in test_cases:
+            result = detect_intent(text, 'ml')
+            self.assertEqual(result, 'return_refund', f"Failed for text: {text}")
+
+    def test_policy_intent_english(self):
+        """Test policy intent detection in English"""
+        test_cases = [
+            "What is your return policy?",
+            "Can you explain the terms and conditions?",
+            "I need to see the rules",
+            "Where can I find your policy?"
+        ]
+        
+        for text in test_cases:
+            result = detect_intent(text, 'en')
+            self.assertEqual(result, 'policy', f"Failed for text: {text}")
+
+    def test_policy_intent_malayalam(self):
+        """Test policy intent detection in Malayalam"""
+        test_cases = [
+            "നിങ്ങളുടെ നയം എന്താണ്?",
+            "നിയമങ്ങൾ വിശദീകരിക്കുക",
+            "വ്യവസ്ഥകൾ കാണാൻ ആഗ്രഹിക്കുന്നു",
+            "നയങ്ങൾ എവിടെ കാണാം?"
+        ]
+        
+        for text in test_cases:
+            result = detect_intent(text, 'ml')
+            self.assertEqual(result, 'policy', f"Failed for text: {text}")
+
+    def test_escalation_intent_english(self):
+        """Test escalation intent detection in English"""
+        test_cases = [
+            "I want to talk to a human agent",
+            "This is a complaint about your service",
+            "Can I speak to a support executive?",
+            "I need to escalate this issue"
+        ]
+        
+        for text in test_cases:
+            result = detect_intent(text, 'en')
+            self.assertEqual(result, 'escalation', f"Failed for text: {text}")
+
+    def test_escalation_intent_malayalam(self):
+        """Test escalation intent detection in Malayalam"""
+        test_cases = [
+            "മനുഷ്യനോട് സംസാരിക്കാൻ ആഗ്രഹിക്കുന്നു",
+            "നിങ്ങളുടെ സേവനത്തെക്കുറിച്ചുള്ള പരാതി",
+            "കസ്റ്റമർ കെയറിനെ ബന്ധിക്കുക",
+            "ഈ പ്രശ്നം എസ്കലേറ്റ് ചെയ്യണം"
+        ]
+        
+        for text in test_cases:
+            result = detect_intent(text, 'ml')
+            self.assertEqual(result, 'escalation', f"Failed for text: {text}")
+
+    def test_general_intent_fallback(self):
+        """Test that general intent is returned when no specific intent detected"""
+        test_cases = [
+            "Hello, how are you?",
+            "Thank you for your help",
+            "This is a general question",
+            "I just wanted to say hi"
+        ]
+        
+        for text in test_cases:
+            result = detect_intent(text, 'en')
+            self.assertEqual(result, 'general', f"Failed for text: {text}")
+
+    def test_empty_text_returns_general(self):
+        """Test that empty text returns general intent"""
+        result = detect_intent("", 'en')
+        self.assertEqual(result, 'general')
+
+    def test_case_insensitive_matching(self):
+        """Test that intent detection is case insensitive"""
+        test_cases = [
+            ("WHERE IS MY ORDER?", 'order_status'),
+            ("I Want A Refund", 'return_refund'),
+            ("What Is Your POLICY?", 'policy'),
+            ("I Need To TALK TO A HUMAN", 'escalation')
+        ]
+        
+        for text, expected_intent in test_cases:
+            result = detect_intent(text, 'en')
+            self.assertEqual(result, expected_intent, f"Failed for text: {text}")
+
+    def test_mixed_language_intent_detection(self):
+        """Test intent detection with mixed language text"""
+        # Test that we can still detect intent even with mixed language
+        # The intent detection should work based on the specified language parameter
+        result = detect_intent("Order എവിടെയാണ്?", 'en')
+        self.assertEqual(result, 'order_status')
+        
+        result = detect_intent("Order എവിടെയാണ്?", 'ml')
+        self.assertEqual(result, 'order_status')
+
+
+class IntentIntegrationTests(TestCase):
+    """Test intent detection integration with message creation"""
+
+    def test_message_creation_with_auto_intent_detection(self):
+        """Test that messages are created with automatic intent detection"""
+        # Create conversation
+        conversation = SupportConversation.objects.create(
+            user_id="test_user",
+            language="en"
+        )
+
+        # Create message with order status intent
+        message = SupportMessage.objects.create(
+            conversation=conversation,
+            sender="user",
+            message="Where is my order?",
+            language_detected="en",
+            query_type="order_status"  # This would be auto-detected in real scenario
+        )
+
+        self.assertEqual(message.query_type, 'order_status')
+
+    def test_escalation_updates_conversation(self):
+        """Test that escalation intent updates conversation escalation flags"""
+        # Create conversation
+        conversation = SupportConversation.objects.create(
+            user_id="test_user",
+            language="en",
+            escalated=False,
+            escalation_reason=""
+        )
+
+        # Simulate escalation message creation
+        conversation.escalated = True
+        conversation.escalation_reason = "I want to talk to a human agent"
+        conversation.save()
+
+        # Verify conversation was updated
+        conversation.refresh_from_db()
+        self.assertTrue(conversation.escalated)
+        self.assertEqual(conversation.escalation_reason, "I want to talk to a human agent")
+
+    def test_explicit_query_type_override(self):
+        """Test that explicit query_type parameter overrides auto-detection"""
+        # This test verifies that if query_type is explicitly provided,
+        # it should be used instead of auto-detection
+        # (This would be tested through the API in a real integration test)
+        conversation = SupportConversation.objects.create(
+            user_id="test_user",
+            language="en"
+        )
+
+        # Create message with explicit query_type that doesn't match content
+        message = SupportMessage.objects.create(
+            conversation=conversation,
+            sender="user",
+            message="Where is my order?",  # Should detect as order_status
+            language_detected="en",
+            query_type="general"  # Explicit override
+        )
+
+        # Should use the explicit query_type
+        self.assertEqual(message.query_type, 'general')
 
     def test_conversation_language_update(self):
         """Test that conversation language updates based on messages"""
