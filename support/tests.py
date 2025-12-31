@@ -1,7 +1,11 @@
 from django.test import TestCase
 from .utils.language import detect_language, determine_response_language
 from .utils.intent import detect_intent
-from .models import SupportConversation, SupportMessage
+from .utils.responses import generate_response
+from .models import SupportConversation, SupportMessage, Order, Policy
+from django.urls import reverse
+from rest_framework.test import APITestCase
+from rest_framework import status
 
 
 class LanguageDetectionTests(TestCase):
@@ -364,3 +368,92 @@ class IntentIntegrationTests(TestCase):
         conversation.save()
 
         self.assertEqual(conversation.language, 'en')
+class ResponseGenerationTests(TestCase):
+    """Test response generation functionality"""
+
+    def test_order_status_response_en(self):
+        result = generate_response('order_status', 'en', {'status': 'shipped', 'date': '2023-12-31'})
+        self.assertIn("shipped", result)
+        self.assertIn("2023-12-31", result)
+
+    def test_order_status_response_ml(self):
+        result = generate_response('order_status', 'ml', {'status': 'ഷിപ്പ് ചെയ്തു'})
+        self.assertIn("ഷിപ്പ് ചെയ്തു", result)
+
+    def test_policy_response_en(self):
+        result = generate_response('policy', 'en', {'policy_type': 'return'})
+        self.assertEqual(result, "Here is our return policy.")
+
+    def test_escalation_response_en(self):
+        result = generate_response('escalation', 'en')
+        self.assertEqual(result, "I am connecting you to a support executive.")
+
+    def test_fallback_response(self):
+        result = generate_response('unknown_intent', 'en')
+        self.assertEqual(result, "How can I help you today?")
+
+
+class ResponseIntegrationTests(APITestCase):
+    """Test response generation integration with API"""
+
+    def setUp(self):
+        self.conversation = SupportConversation.objects.create(
+            user_id="test_user",
+            language="en"
+        )
+        self.url = reverse('message-create', kwargs={'conversation_id': self.conversation.session_id})
+
+    def test_api_generates_ai_response(self):
+        """Test that API automatically generates and returns an AI response"""
+        data = {'message': 'Where is my order?'}
+        response = self.client.post(self.url, data, format='json')
+        
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn('ai_response', response.data)
+        self.assertEqual(response.data['ai_response']['sender'], 'ai')
+        self.assertEqual(response.data['detected_intent'], 'order_status')
+        
+        # Check if AI message is stored in database
+        ai_messages = SupportMessage.objects.filter(conversation=self.conversation, sender='ai')
+        self.assertEqual(ai_messages.count(), 1)
+        self.assertIn("order", ai_messages[0].message)
+
+    def test_api_order_status_with_context(self):
+        """Test that AI response uses order context if available"""
+        # Create an order for the user
+        Order.objects.create(
+            order_id="ORD-123",
+            user_id="test_user",
+            status="delivered"
+        )
+        
+        data = {'message': 'status of my order'}
+        response = self.client.post(self.url, data, format='json')
+        
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn("delivered", response.data['ai_response']['message'])
+
+    def test_api_policy_with_context(self):
+        """Test that AI response uses policy context if available"""
+        # Create a policy
+        Policy.objects.create(
+            policy_type="Return",
+            content_en="Return within 7 days",
+            content_ml="7 ദിവസത്തിനുള്ളിൽ തിരികെ നൽകുക"
+        )
+        
+        data = {'message': 'Tell me about your Return policy'}
+        response = self.client.post(self.url, data, format='json')
+        
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn("Return", response.data['ai_response']['message'])
+
+    def test_api_malayalam_response(self):
+        """Test that API generates Malayalam response for Malayalam message"""
+        data = {'message': 'എന്റെ ഓർഡർ എവിടെയാണ്?'}
+        response = self.client.post(self.url, data, format='json')
+        
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['response_language'], 'ml')
+        # Check for some Malayalam text in AI response
+        self.assertIn("ഓർഡർ", response.data['ai_response']['message'])
