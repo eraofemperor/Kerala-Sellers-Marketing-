@@ -16,6 +16,7 @@ from .serializers import (
     SupportMessageSerializer,
     PolicySerializer
 )
+from .utils.language import detect_language, determine_response_language
 
 
 def generate_return_id():
@@ -307,7 +308,7 @@ class PolicyModelAdmin:
     Custom admin integration for cache invalidation.
     This class provides methods to be called from admin.py to invalidate cache when policies are updated.
     """
-    
+
     @staticmethod
     def invalidate_policy_cache():
         """
@@ -319,6 +320,170 @@ class PolicyModelAdmin:
         for policy in policies:
             cache_key = f'policy_{policy.policy_type}'
             cache.delete(cache_key)
-        
+
         # Clear policy list cache
         cache.delete('policy_list')
+
+
+class SupportMessageView(APIView):
+    """
+    API View for creating support messages with language detection.
+
+    POST /api/v1/conversations/{conversation_id}/messages/
+    """
+
+    def post(self, request, conversation_id, format=None):
+        """
+        Create a new support message with automatic language detection.
+
+        Args:
+            request: HTTP request with message data
+            conversation_id: Conversation ID
+
+        Returns:
+            Response: JSON response with created message details
+        """
+        try:
+            # Get the conversation
+            conversation = SupportConversation.objects.get(session_id=conversation_id)
+
+            # Get message data from request
+            message_text = request.data.get('message', '')
+            sender = request.data.get('sender', 'user')
+            query_type = request.data.get('query_type', 'general')
+
+            if not message_text:
+                return Response(
+                    {'error': 'Message text is required'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Detect language
+            detected_language = detect_language(message_text)
+
+            # Determine response language
+            response_language = determine_response_language(conversation, detected_language)
+
+            # Update conversation language if this is the first message or user switched language
+            if conversation.message_count == 0:
+                # First message - set conversation language
+                conversation.language = detected_language
+            else:
+                # Subsequent message - update if user switched to a non-mixed language
+                if detected_language != 'mixed':
+                    conversation.language = detected_language
+
+            # Save conversation
+            conversation.message_count += 1
+            conversation.save()
+
+            # Create the message
+            message = SupportMessage.objects.create(
+                conversation=conversation,
+                sender=sender,
+                message=message_text,
+                language_detected=detected_language,
+                query_type=query_type
+            )
+
+            # Return response with language information
+            response_data = {
+                'message_id': message.id,
+                'conversation_id': conversation.session_id,
+                'detected_language': detected_language,
+                'response_language': response_language,
+                'message': message_text,
+                'sender': sender,
+                'query_type': query_type,
+                'created_at': message.created_at.isoformat() + 'Z'
+            }
+
+            return Response(response_data, status=status.HTTP_201_CREATED)
+
+        except SupportConversation.DoesNotExist:
+            return Response(
+                {'error': 'Conversation not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'Error creating message: {str(e)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class SupportConversationView(APIView):
+    """
+    API View for creating support conversations.
+
+    POST /api/v1/conversations/
+    GET /api/v1/conversations/{conversation_id}/
+    """
+
+    def post(self, request, format=None):
+        """
+        Create a new support conversation.
+
+        Args:
+            request: HTTP request with conversation data
+
+        Returns:
+            Response: JSON response with created conversation details
+        """
+        try:
+            user_id = request.data.get('user_id')
+
+            if not user_id:
+                return Response(
+                    {'error': 'user_id is required'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Create conversation with default language (English)
+            conversation = SupportConversation.objects.create(
+                user_id=user_id,
+                language='en'  # Default to English, will be updated on first message
+            )
+
+            response_data = {
+                'conversation_id': conversation.session_id,
+                'user_id': conversation.user_id,
+                'language': conversation.language,
+                'started_at': conversation.started_at.isoformat() + 'Z',
+                'message_count': conversation.message_count
+            }
+
+            return Response(response_data, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response(
+                {'error': f'Error creating conversation: {str(e)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    def get(self, request, conversation_id=None, format=None):
+        """
+        Retrieve conversation details.
+
+        Args:
+            request: HTTP request
+            conversation_id: Conversation ID
+
+        Returns:
+            Response: JSON response with conversation details
+        """
+        if conversation_id:
+            try:
+                conversation = SupportConversation.objects.get(session_id=conversation_id)
+                serializer = SupportConversationSerializer(conversation)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            except SupportConversation.DoesNotExist:
+                return Response(
+                    {'error': 'Conversation not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        else:
+            # List all conversations (for admin purposes)
+            conversations = SupportConversation.objects.all()
+            serializer = SupportConversationSerializer(conversations, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
