@@ -10,6 +10,7 @@ import re
 import logging
 from typing import Optional, Tuple
 import environ
+from django.apps import apps
 
 logger = logging.getLogger(__name__)
 
@@ -91,33 +92,51 @@ class LLMClient:
         logger.warning(f"Truncating prompt from {len(prompt)} to {max_chars} characters")
         return prompt[:max_chars]
 
-    def _prepare_prompts(self, user_message: str, language: str) -> Tuple[str, str]:
+    def _build_conversation_context(self, conversation) -> str:
         """
-        Prepare system and user prompts for LLM.
-
+        Build conversation context from recent message history.
+        
         Args:
-            user_message: Sanitized user message
-            language: Response language (en/ml)
-
+            conversation: SupportConversation instance
+            
         Returns:
-            Tuple of (system_prompt, user_prompt)
+            Formatted conversation history as string, or empty string if no relevant history
         """
-        # System prompt
-        system_prompt = (
-            "You are a polite and helpful customer support assistant for Kerala Sellers. "
-            "Respond in a friendly, professional manner. Keep responses concise and helpful."
-        )
-
-        # Add language instruction
-        if language == 'ml':
-            system_prompt += " Respond in Malayalam language."
-        else:
-            system_prompt += " Respond in English language."
-
-        # User prompt - the sanitized user message
-        user_prompt = f"Customer: {user_message}\n\nAssistant:"
-
-        return system_prompt, user_prompt
+        if conversation is None:
+            return ""
+            
+        try:
+            # Get SupportMessage model to avoid circular imports
+            SupportMessage = apps.get_model('support', 'SupportMessage')
+            
+            # Get last 5 messages (user + ai exchanges) with general intent only
+            # Ordered by created_at to maintain chronological order
+            messages = SupportMessage.objects.filter(
+                conversation=conversation,
+                query_type='general',  # Only include general intent messages
+                sender__in=['user', 'ai']  # Only user and AI messages
+            ).order_by('-created_at')[:10]  # Get up to 10 messages (5 exchanges)
+            
+            # Reverse to get chronological order (oldest first)
+            messages = list(messages)
+            messages.reverse()
+            
+            if not messages:
+                return ""
+                
+            # Format conversation history
+            context_lines = []
+            for message in messages:
+                if message.sender == 'user':
+                    context_lines.append(f"User: {message.message}")
+                elif message.sender == 'ai':
+                    context_lines.append(f"Assistant: {message.message}")
+            
+            return "\n".join(context_lines) + "\n\n"
+            
+        except Exception as e:
+            logger.warning(f"Error building conversation context: {str(e)}")
+            return ""
 
     def _call_openai_api(self, system_prompt: str, user_prompt: str) -> Tuple[Optional[str], float]:
         """
@@ -197,6 +216,36 @@ class LLMClient:
             logger.error(f"Anthropic API error: {str(e)}")
             return None, 0.0
 
+    def _prepare_prompts(self, user_message: str, language: str, conversation_context: str = "") -> Tuple[str, str]:
+        """
+        Prepare system and user prompts for LLM.
+
+        Args:
+            user_message: Sanitized user message
+            language: Response language (en/ml)
+            conversation_context: Optional conversation history context
+
+        Returns:
+            Tuple of (system_prompt, user_prompt)
+        """
+        # System prompt
+        system_prompt = (
+            "You are a polite and helpful customer support assistant for Kerala Sellers. "
+            "Respond in a friendly, professional manner. Keep responses concise and helpful."
+        )
+
+        # Add language instruction
+        if language == 'ml':
+            system_prompt += " Respond in Malayalam language."
+        else:
+            system_prompt += " Respond in English language."
+
+        # User prompt - include conversation context if available, then current user message
+        user_prompt = conversation_context
+        user_prompt += f"Customer: {user_message}\n\nAssistant:"
+
+        return system_prompt, user_prompt
+
     def _call_mock_api(self, user_message: str, language: str) -> Tuple[str, float]:
         """
         Mock API for testing without actual LLM.
@@ -229,13 +278,14 @@ class LLMClient:
 
         return response, confidence
 
-    def generate_reply(self, user_message: str, language: str) -> Tuple[str, float, bool]:
+    def generate_reply(self, user_message: str, language: str, conversation=None) -> Tuple[str, float, bool]:
         """
         Generate a reply using LLM with safe fallback.
 
         Args:
             user_message: User's message
             language: Response language (en/ml)
+            conversation: Optional SupportConversation instance for context
 
         Returns:
             Tuple of (response_text, confidence_score, used_fallback)
@@ -244,8 +294,18 @@ class LLMClient:
         sanitized_message = self._sanitize_prompt(user_message)
         truncated_message = self._truncate_prompt(sanitized_message)
 
-        # Prepare prompts
-        system_prompt, user_prompt = self._prepare_prompts(truncated_message, language)
+        # Build conversation context if conversation is provided
+        conversation_context = ""
+        if conversation is not None:
+            conversation_context = self._build_conversation_context(conversation)
+            # Sanitize and truncate conversation context as well
+            conversation_context = self._sanitize_prompt(conversation_context)
+
+        # Prepare prompts with conversation context
+        system_prompt, user_prompt = self._prepare_prompts(truncated_message, language, conversation_context)
+
+        # Truncate the final user prompt to ensure it fits within token limits
+        user_prompt = self._truncate_prompt(user_prompt)
 
         # Try to get response from configured provider
         response_text = None

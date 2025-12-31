@@ -414,7 +414,8 @@ class SupportMessageView(APIView):
                         llm_client = get_llm_client()
                         ai_response_text, ai_confidence, used_fallback = llm_client.generate_reply(
                             message_text,
-                            response_language
+                            response_language,
+                            conversation  # Pass conversation for context
                         )
 
                         if used_fallback:
