@@ -17,6 +17,7 @@ from .serializers import (
     PolicySerializer
 )
 from .utils.language import detect_language, determine_response_language
+from .utils.intent import detect_intent
 
 
 def generate_return_id():
@@ -327,14 +328,14 @@ class PolicyModelAdmin:
 
 class SupportMessageView(APIView):
     """
-    API View for creating support messages with language detection.
+    API View for creating support messages with language detection and intent classification.
 
     POST /api/v1/conversations/{conversation_id}/messages/
     """
 
     def post(self, request, conversation_id, format=None):
         """
-        Create a new support message with automatic language detection.
+        Create a new support message with automatic language detection and intent classification.
 
         Args:
             request: HTTP request with message data
@@ -350,7 +351,7 @@ class SupportMessageView(APIView):
             # Get message data from request
             message_text = request.data.get('message', '')
             sender = request.data.get('sender', 'user')
-            query_type = request.data.get('query_type', 'general')
+            query_type = request.data.get('query_type', None)
 
             if not message_text:
                 return Response(
@@ -360,6 +361,13 @@ class SupportMessageView(APIView):
 
             # Detect language
             detected_language = detect_language(message_text)
+
+            # Detect intent if query_type not explicitly provided
+            if query_type is None:
+                detected_intent = detect_intent(message_text, detected_language)
+                query_type = detected_intent
+            else:
+                detected_intent = query_type
 
             # Determine response language
             response_language = determine_response_language(conversation, detected_language)
@@ -372,6 +380,11 @@ class SupportMessageView(APIView):
                 # Subsequent message - update if user switched to a non-mixed language
                 if detected_language != 'mixed':
                     conversation.language = detected_language
+
+            # Handle escalation logic
+            if detected_intent == 'escalation':
+                conversation.escalated = True
+                conversation.escalation_reason = message_text
 
             # Save conversation
             conversation.message_count += 1
@@ -386,12 +399,13 @@ class SupportMessageView(APIView):
                 query_type=query_type
             )
 
-            # Return response with language information
+            # Return response with language and intent information
             response_data = {
                 'message_id': message.id,
                 'conversation_id': conversation.session_id,
                 'detected_language': detected_language,
                 'response_language': response_language,
+                'detected_intent': detected_intent,
                 'message': message_text,
                 'sender': sender,
                 'query_type': query_type,
