@@ -18,6 +18,7 @@ from .serializers import (
 )
 from .utils.language import detect_language, determine_response_language
 from .utils.intent import detect_intent
+from .utils.responses import generate_response
 
 
 def generate_return_id():
@@ -399,6 +400,51 @@ class SupportMessageView(APIView):
                 query_type=query_type
             )
 
+            # Generate AI response if the message is from a user
+            ai_message_data = None
+            if sender == 'user':
+                # Gather context for response generation
+                context = {}
+                if detected_intent == 'order_status':
+                    # Try to find the latest order for this user
+                    latest_order = Order.objects.filter(user_id=conversation.user_id).first()
+                    if latest_order:
+                        context['status'] = latest_order.status
+                        if latest_order.estimated_delivery:
+                            context['date'] = latest_order.estimated_delivery.strftime('%Y-%m-%d')
+                
+                elif detected_intent == 'policy':
+                    # Try to identify policy type from message
+                    all_policies = Policy.objects.all()
+                    for p in all_policies:
+                        if p.policy_type.lower() in message_text.lower():
+                            context['policy_type'] = p.policy_type
+                            break
+
+                # Generate AI response
+                ai_response_text = generate_response(detected_intent, response_language, context)
+                
+                # Create AI message
+                ai_message = SupportMessage.objects.create(
+                    conversation=conversation,
+                    sender='ai',
+                    message=ai_response_text,
+                    language_detected=response_language,
+                    query_type=detected_intent
+                )
+                
+                # Update conversation message count for AI message
+                conversation.message_count += 1
+                conversation.save()
+                
+                ai_message_data = {
+                    'message_id': ai_message.id,
+                    'message': ai_message.message,
+                    'sender': 'ai',
+                    'query_type': ai_message.query_type,
+                    'created_at': ai_message.created_at.isoformat() + 'Z'
+                }
+
             # Return response with language and intent information
             response_data = {
                 'message_id': message.id,
@@ -411,6 +457,9 @@ class SupportMessageView(APIView):
                 'query_type': query_type,
                 'created_at': message.created_at.isoformat() + 'Z'
             }
+            
+            if ai_message_data:
+                response_data['ai_response'] = ai_message_data
 
             return Response(response_data, status=status.HTTP_201_CREATED)
 
