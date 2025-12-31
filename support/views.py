@@ -19,6 +19,7 @@ from .serializers import (
 from .utils.language import detect_language, determine_response_language
 from .utils.intent import detect_intent
 from .utils.responses import generate_response
+from .services.llm import get_llm_client
 
 
 def generate_return_id():
@@ -403,45 +404,76 @@ class SupportMessageView(APIView):
             # Generate AI response if the message is from a user
             ai_message_data = None
             if sender == 'user':
-                # Gather context for response generation
-                context = {}
-                if detected_intent == 'order_status':
-                    # Try to find the latest order for this user
-                    latest_order = Order.objects.filter(user_id=conversation.user_id).first()
-                    if latest_order:
-                        context['status'] = latest_order.status
-                        if latest_order.estimated_delivery:
-                            context['date'] = latest_order.estimated_delivery.strftime('%Y-%m-%d')
-                
-                elif detected_intent == 'policy':
-                    # Try to identify policy type from message
-                    all_policies = Policy.objects.all()
-                    for p in all_policies:
-                        if p.policy_type.lower() in message_text.lower():
-                            context['policy_type'] = p.policy_type
-                            break
+                ai_response_text = None
+                ai_confidence = None
 
-                # Generate AI response
-                ai_response_text = generate_response(detected_intent, response_language, context)
-                
+                # Use LLM only for general intent, deterministic responses for others
+                if detected_intent == 'general':
+                    # Use LLM for general queries
+                    try:
+                        llm_client = get_llm_client()
+                        ai_response_text, ai_confidence, used_fallback = llm_client.generate_reply(
+                            message_text,
+                            response_language
+                        )
+
+                        if used_fallback:
+                            # Log that fallback was used
+                            import logging
+                            logger = logging.getLogger(__name__)
+                            logger.info("LLM fallback used for general intent")
+
+                    except Exception as e:
+                        # Fallback to template-based response on any error
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.error(f"LLM error, using fallback: {str(e)}")
+
+                        ai_response_text = generate_response('general', response_language, {})
+                        ai_confidence = 0.5
+                else:
+                    # Use deterministic template-based responses for non-general intents
+                    context = {}
+                    if detected_intent == 'order_status':
+                        # Try to find the latest order for this user
+                        latest_order = Order.objects.filter(user_id=conversation.user_id).first()
+                        if latest_order:
+                            context['status'] = latest_order.status
+                            if latest_order.estimated_delivery:
+                                context['date'] = latest_order.estimated_delivery.strftime('%Y-%m-%d')
+
+                    elif detected_intent == 'policy':
+                        # Try to identify policy type from message
+                        all_policies = Policy.objects.all()
+                        for p in all_policies:
+                            if p.policy_type.lower() in message_text.lower():
+                                context['policy_type'] = p.policy_type
+                                break
+
+                    # Generate deterministic response
+                    ai_response_text = generate_response(detected_intent, response_language, context)
+                    ai_confidence = 1.0  # Deterministic responses have high confidence
+
                 # Create AI message
                 ai_message = SupportMessage.objects.create(
                     conversation=conversation,
                     sender='ai',
                     message=ai_response_text,
                     language_detected=response_language,
-                    query_type=detected_intent
+                    query_type=detected_intent,
+                    ai_confidence=ai_confidence
                 )
-                
+
                 # Update conversation message count for AI message
                 conversation.message_count += 1
                 conversation.save()
-                
+
                 ai_message_data = {
                     'message_id': ai_message.id,
                     'message': ai_message.message,
                     'sender': 'ai',
                     'query_type': ai_message.query_type,
+                    'ai_confidence': ai_confidence,
                     'created_at': ai_message.created_at.isoformat() + 'Z'
                 }
 
