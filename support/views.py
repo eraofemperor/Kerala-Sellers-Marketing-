@@ -1,4 +1,5 @@
 from django.utils import timezone
+from django.core.cache import cache
 from datetime import timedelta
 import random
 import string
@@ -214,3 +215,110 @@ class ReturnRequestView(APIView):
             {'error': 'Return ID is required'},
             status=status.HTTP_400_BAD_REQUEST
         )
+
+
+class PolicyListView(APIView):
+    """
+    API View for listing all policies with their types and versions.
+    
+    GET /api/v1/policies/
+    """
+    
+    def get(self, request, format=None):
+        """
+        Retrieve list of all policies.
+        
+        Returns:
+            Response: JSON response with policy types and versions
+        """
+        # Try to get from cache first
+        cache_key = 'policy_list'
+        cached_policies = cache.get(cache_key)
+        
+        if cached_policies is not None:
+            return Response(cached_policies, status=status.HTTP_200_OK)
+        
+        # If not in cache, fetch from database
+        policies = Policy.objects.all()
+        policy_list = []
+        
+        for policy in policies:
+            policy_list.append({
+                'policy_type': policy.policy_type,
+                'version': policy.version
+            })
+        
+        # Cache the result for 5 minutes
+        cache.set(cache_key, policy_list, 300)
+        
+        return Response(policy_list, status=status.HTTP_200_OK)
+
+
+class PolicyDetailView(APIView):
+    """
+    API View for retrieving policy by type.
+    
+    GET /api/v1/policies/{policy_type}/
+    """
+    
+    def get(self, request, policy_type, format=None):
+        """
+        Retrieve policy by type with bilingual content.
+        
+        Args:
+            request: HTTP request
+            policy_type: Policy type identifier
+            
+        Returns:
+            Response: JSON response with policy content
+        """
+        # Try to get from cache first
+        cache_key = f'policy_{policy_type}'
+        cached_policy = cache.get(cache_key)
+        
+        if cached_policy is not None:
+            return Response(cached_policy, status=status.HTTP_200_OK)
+        
+        # If not in cache, fetch from database
+        try:
+            policy = Policy.objects.get(policy_type=policy_type)
+            
+            policy_data = {
+                'policy_type': policy.policy_type,
+                'version': policy.version,
+                'content_en': policy.content_en,
+                'content_ml': policy.content_ml
+            }
+            
+            # Cache the result for 5 minutes
+            cache.set(cache_key, policy_data, 300)
+            
+            return Response(policy_data, status=status.HTTP_200_OK)
+            
+        except Policy.DoesNotExist:
+            return Response(
+                {'error': 'Policy not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+
+class PolicyModelAdmin:
+    """
+    Custom admin integration for cache invalidation.
+    This class provides methods to be called from admin.py to invalidate cache when policies are updated.
+    """
+    
+    @staticmethod
+    def invalidate_policy_cache():
+        """
+        Invalidate all policy-related cache entries.
+        Called when policies are updated through admin interface.
+        """
+        # Clear specific policy cache entries
+        policies = Policy.objects.all()
+        for policy in policies:
+            cache_key = f'policy_{policy.policy_type}'
+            cache.delete(cache_key)
+        
+        # Clear policy list cache
+        cache.delete('policy_list')
