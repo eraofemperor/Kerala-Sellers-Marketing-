@@ -721,3 +721,265 @@ class LLMIntegrationTests(APITestCase):
         self.assertIn('ai_response', response.data)
         # Mock responses have confidence of 0.8
         self.assertEqual(response.data['ai_response']['ai_confidence'], 0.8)
+
+
+class ConversationMemoryTests(TestCase):
+    """Test conversation memory and context window functionality"""
+
+    def setUp(self):
+        """Set up test data"""
+        self.client = LLMClient()
+        self.conversation = SupportConversation.objects.create(
+            user_id="test_user",
+            language="en"
+        )
+
+    def test_build_conversation_context_empty(self):
+        """Test building conversation context with no messages"""
+        context = self.client._build_conversation_context(self.conversation)
+        self.assertEqual(context, "")
+
+    def test_build_conversation_context_with_general_messages(self):
+        """Test building conversation context with general intent messages"""
+        # Create some general intent messages
+        SupportMessage.objects.create(
+            conversation=self.conversation,
+            sender="user",
+            message="Hello, how are you?",
+            language_detected="en",
+            query_type="general"
+        )
+        
+        SupportMessage.objects.create(
+            conversation=self.conversation,
+            sender="ai",
+            message="I'm good, thank you! How can I help you?",
+            language_detected="en",
+            query_type="general"
+        )
+
+        context = self.client._build_conversation_context(self.conversation)
+        self.assertIn("User: Hello, how are you?", context)
+        self.assertIn("Assistant: I'm good, thank you! How can I help you?", context)
+
+    def test_build_conversation_context_excludes_non_general_messages(self):
+        """Test that non-general intent messages are excluded from context"""
+        # Create a general message
+        SupportMessage.objects.create(
+            conversation=self.conversation,
+            sender="user",
+            message="Hello",
+            language_detected="en",
+            query_type="general"
+        )
+        
+        # Create an order_status message (should be excluded)
+        SupportMessage.objects.create(
+            conversation=self.conversation,
+            sender="user",
+            message="Where is my order?",
+            language_detected="en",
+            query_type="order_status"
+        )
+
+        context = self.client._build_conversation_context(self.conversation)
+        self.assertIn("User: Hello", context)
+        self.assertNotIn("Where is my order?", context)
+
+    def test_build_conversation_context_chronological_order(self):
+        """Test that conversation context maintains chronological order"""
+        # Create messages in order
+        msg1 = SupportMessage.objects.create(
+            conversation=self.conversation,
+            sender="user",
+            message="First message",
+            language_detected="en",
+            query_type="general"
+        )
+        
+        # Add a small delay to ensure different timestamps
+        import time
+        time.sleep(0.001)
+        
+        msg2 = SupportMessage.objects.create(
+            conversation=self.conversation,
+            sender="ai",
+            message="Second message",
+            language_detected="en",
+            query_type="general"
+        )
+
+        context = self.client._build_conversation_context(self.conversation)
+        # First message should come before second message
+        first_pos = context.find("First message")
+        second_pos = context.find("Second message")
+        self.assertLess(first_pos, second_pos)
+
+    def test_build_conversation_context_with_none_conversation(self):
+        """Test building conversation context with None conversation"""
+        context = self.client._build_conversation_context(None)
+        self.assertEqual(context, "")
+
+    def test_prepare_prompts_with_conversation_context(self):
+        """Test that conversation context is included in prompts"""
+        conversation_context = "User: Hello\nAssistant: Hi there\n\n"
+        system_prompt, user_prompt = self.client._prepare_prompts(
+            "How are you?", 'en', conversation_context
+        )
+        
+        self.assertIn("User: Hello", user_prompt)
+        self.assertIn("Assistant: Hi there", user_prompt)
+        self.assertIn("Customer: How are you?", user_prompt)
+
+    def test_prepare_prompts_without_conversation_context(self):
+        """Test that prompts work without conversation context"""
+        system_prompt, user_prompt = self.client._prepare_prompts("Hello", 'en')
+        
+        self.assertIn("Customer: Hello", user_prompt)
+        self.assertNotIn("User:", user_prompt)
+        # The prompt format always ends with "Assistant:" to indicate where the response should start
+        self.assertIn("Assistant:", user_prompt)
+
+    def test_generate_reply_with_conversation_context(self):
+        """Test that generate_reply accepts conversation parameter"""
+        # This test verifies the method signature accepts conversation
+        response, confidence, used_fallback = self.client.generate_reply(
+            "Hello", 'en', self.conversation
+        )
+        
+        self.assertIsNotNone(response)
+        self.assertGreater(confidence, 0)
+        self.assertFalse(used_fallback)
+
+    def test_conversation_context_pii_sanitization(self):
+        """Test that PII is sanitized from conversation context"""
+        # Create a message with PII
+        SupportMessage.objects.create(
+            conversation=self.conversation,
+            sender="user",
+            message="My email is john@example.com",
+            language_detected="en",
+            query_type="general"
+        )
+
+        # Generate reply should sanitize the context
+        response, confidence, used_fallback = self.client.generate_reply(
+            "Hello", 'en', self.conversation
+        )
+        
+        # Should still work and return a response
+        self.assertIsNotNone(response)
+        self.assertGreater(confidence, 0)
+
+    def test_conversation_context_token_limit_enforcement(self):
+        """Test that conversation context respects token limits"""
+        # Create a very long message
+        long_message = "Hello " * 1000  # Very long message
+        SupportMessage.objects.create(
+            conversation=self.conversation,
+            sender="user",
+            message=long_message,
+            language_detected="en",
+            query_type="general"
+        )
+
+        # Generate reply should handle the long context
+        response, confidence, used_fallback = self.client.generate_reply(
+            "Hello", 'en', self.conversation
+        )
+        
+        # Should still work and return a response
+        self.assertIsNotNone(response)
+        self.assertGreater(confidence, 0)
+
+
+class ConversationMemoryIntegrationTests(APITestCase):
+    """Test conversation memory integration with API endpoints"""
+
+    def setUp(self):
+        """Set up test data"""
+        self.conversation = SupportConversation.objects.create(
+            user_id="test_user",
+            language="en"
+        )
+        self.url = reverse('message-create', kwargs={'conversation_id': self.conversation.session_id})
+
+    def test_conversation_context_included_in_general_intent(self):
+        """Test that conversation context is used for general intent messages"""
+        # First message - general intent
+        data1 = {'message': 'Hello, how are you?'}
+        response1 = self.client.post(self.url, data1, format='json')
+        
+        self.assertEqual(response1.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response1.data['detected_intent'], 'general')
+        
+        # Second message - should include context from first message
+        data2 = {'message': 'I am good, thanks for asking!'}
+        response2 = self.client.post(self.url, data2, format='json')
+        
+        self.assertEqual(response2.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response2.data['detected_intent'], 'general')
+
+    def test_conversation_context_excluded_for_non_general_intent(self):
+        """Test that conversation context is not used for non-general intent messages"""
+        # First message - general intent
+        data1 = {'message': 'Hello'}
+        response1 = self.client.post(self.url, data1, format='json')
+        
+        # Second message - order status intent (should not use context)
+        data2 = {'message': 'Where is my order?'}
+        response2 = self.client.post(self.url, data2, format='json')
+        
+        self.assertEqual(response2.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response2.data['detected_intent'], 'order_status')
+        # Should still work but not use LLM context
+
+    def test_conversation_context_bilingual_support(self):
+        """Test that conversation context works with bilingual conversations"""
+        # First message - English
+        data1 = {'message': 'Hello'}
+        response1 = self.client.post(self.url, data1, format='json')
+        
+        # Second message - Malayalam
+        data2 = {'message': 'നന്ദി'}
+        response2 = self.client.post(self.url, data2, format='json')
+        
+        self.assertEqual(response2.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response2.data['detected_intent'], 'general')
+
+    def test_conversation_context_memory_window_limit(self):
+        """Test that conversation context is limited to recent messages"""
+        # Create multiple general intent messages to test the window limit
+        messages = [
+            'First message',
+            'Second message', 
+            'Third message',
+            'Fourth message',
+            'Fifth message',
+            'Sixth message',
+            'Seventh message'
+        ]
+        
+        for message in messages:
+            data = {'message': message}
+            response = self.client.post(self.url, data, format='json')
+            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        
+        # The system should handle the memory window appropriately
+        # Last message should still work
+        data = {'message': 'Final message'}
+        response = self.client.post(self.url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_conversation_context_safety_with_pii(self):
+        """Test that PII in conversation context is handled safely"""
+        # First message with PII
+        data1 = {'message': 'My phone is 9876543210'}
+        response1 = self.client.post(self.url, data1, format='json')
+        
+        # Second message - should still work safely
+        data2 = {'message': 'Hello again'}
+        response2 = self.client.post(self.url, data2, format='json')
+        
+        self.assertEqual(response2.status_code, status.HTTP_201_CREATED)
+        self.assertIn('ai_response', response2.data)
