@@ -1,13 +1,17 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    OrderStatusView, 
-    ReturnEligibilityView, 
+    OrderStatusView,
+    ReturnEligibilityView,
     ReturnRequestView,
     PolicyListView,
     PolicyDetailView,
     SupportConversationView,
-    SupportMessageView
+    SupportMessageView,
+    EscalateConversationView,
+    AssignAgentView,
+    AgentMessageView,
+    ResolveConversationView
 )
 
 router = DefaultRouter()
@@ -23,4 +27,8 @@ urlpatterns = [
     path('v1/conversations/', SupportConversationView.as_view(), name='conversation-list'),
     path('v1/conversations/<uuid:conversation_id>/', SupportConversationView.as_view(), name='conversation-detail'),
     path('v1/conversations/<uuid:conversation_id>/messages/', SupportMessageView.as_view(), name='message-create'),
+    path('v1/conversations/<uuid:conversation_id>/escalate/', EscalateConversationView.as_view(), name='escalate-conversation'),
+    path('v1/conversations/<uuid:conversation_id>/assign/', AssignAgentView.as_view(), name='assign-agent'),
+    path('v1/conversations/<uuid:conversation_id>/agent/messages/', AgentMessageView.as_view(), name='agent-message'),
+    path('v1/conversations/<uuid:conversation_id>/resolve/', ResolveConversationView.as_view(), name='resolve-conversation'),
 ]

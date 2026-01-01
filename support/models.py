@@ -67,27 +67,39 @@ class SupportConversation(models.Model):
         ('ml', 'Malayalam'),
         ('mixed', 'Mixed'),
     ]
+    
+    STATUS_CHOICES = [
+        ('open', 'Open'),
+        ('escalated', 'Escalated'),
+        ('assigned', 'Assigned'),
+        ('resolved', 'Resolved'),
+    ]
 
     session_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     user_id = models.CharField(max_length=100)
     language = models.CharField(max_length=5, choices=LANGUAGE_CHOICES, default='en')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='open')
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     message_count = models.IntegerField(default=0)
     escalated = models.BooleanField(default=False)
     escalation_reason = models.TextField(null=True, blank=True)
+    assigned_agent = models.CharField(max_length=100, null=True, blank=True, help_text="Assigned support agent ID")
+    escalated_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when conversation was escalated")
+    resolved_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when conversation was resolved")
     
     class Meta:
         ordering = ['-started_at']
         
     def __str__(self):
-        return f"{self.session_id} - {self.language}"
+        return f"{self.session_id} - {self.language} ({self.status})"
 
 
 class SupportMessage(models.Model):
     SENDER_CHOICES = [
         ('user', 'User'),
         ('ai', 'AI'),
+        ('agent', 'Agent'),
     ]
 
     QUERY_TYPE_CHOICES = [

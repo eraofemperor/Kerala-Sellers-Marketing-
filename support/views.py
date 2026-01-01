@@ -14,7 +14,9 @@ from .serializers import (
     ReturnRequestCreateSerializer,
     SupportConversationSerializer,
     SupportMessageSerializer,
-    PolicySerializer
+    PolicySerializer,
+    AssignAgentSerializer,
+    AgentMessageSerializer
 )
 from .utils.language import detect_language, determine_response_language
 from .utils.intent import detect_intent
@@ -54,86 +56,86 @@ def check_return_eligibility(order):
 def generate_order_timeline(order):
     """
     Generate a timeline of order status changes based on available timestamps.
-    
+
     Args:
         order: Order model instance
-        
+
     Returns:
         list: Timeline entries with status and timestamp
     """
     timeline = []
-    
+
     # Add placed status (always available via created_at)
     if order.created_at:
         timeline.append({
             'status': 'placed',
             'timestamp': order.created_at.isoformat() + 'Z'
         })
-    
+
     # Add packed status if available
     if order.packed_at:
         timeline.append({
             'status': 'packed',
             'timestamp': order.packed_at.isoformat() + 'Z'
         })
-    
+
     # Add shipped status if available
     if order.shipped_at:
         timeline.append({
             'status': 'shipped',
             'timestamp': order.shipped_at.isoformat() + 'Z'
         })
-    
+
     # Add delivered status if available
     if order.delivered_at:
         timeline.append({
             'status': 'delivered',
             'timestamp': order.delivered_at.isoformat() + 'Z'
         })
-    
+
     return timeline
 
 
 class OrderStatusView(APIView):
     """
     API View for retrieving order status and timeline.
-    
+
     GET /api/v1/orders/{order_id}/status
     """
-    
+
     def get(self, request, order_id, format=None):
         """
         Retrieve order status and generate timeline.
-        
+
         Args:
             request: HTTP request
             order_id: Order ID to look up
-            
+
         Returns:
             Response: JSON response with order status and timeline
         """
         try:
             order = Order.objects.get(order_id=order_id)
-            
+
             # Generate timeline
             timeline = generate_order_timeline(order)
-            
+
             # Build response data
             response_data = {
                 'order_id': order.order_id,
                 'status': order.status,
                 'timeline': timeline
             }
-            
+
             # Add optional fields if available
             if order.tracking_number:
                 response_data['tracking_number'] = order.tracking_number
-            
+
             if order.estimated_delivery:
                 response_data['estimated_delivery'] = order.estimated_delivery.isoformat() + 'Z'
-            
+
             return Response(response_data, status=status.HTTP_200_OK)
-            
+
         except Order.DoesNotExist:
             return Response(
                 {'error': 'Order not found. Please check your order ID.'},
@@ -174,7 +176,7 @@ class ReturnRequestView(APIView):
         serializer = ReturnRequestCreateSerializer(data=request.data)
         if serializer.is_valid():
             order = serializer.validated_data['order_id']
-            
+
             # Check eligibility again before creating
             eligible, reason = check_return_eligibility(order)
             if not eligible:
@@ -201,7 +203,7 @@ class ReturnRequestView(APIView):
                 'return_id': return_request.return_id,
                 'status': return_request.status
             }, status=status.HTTP_201_CREATED)
-        
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def get(self, request, return_id=None, format=None):
@@ -224,81 +226,81 @@ class ReturnRequestView(APIView):
 class PolicyListView(APIView):
     """
     API View for listing all policies with their types and versions.
-    
+
     GET /api/v1/policies/
     """
-    
+
     def get(self, request, format=None):
         """
         Retrieve list of all policies.
-        
+
         Returns:
             Response: JSON response with policy types and versions
         """
         # Try to get from cache first
         cache_key = 'policy_list'
         cached_policies = cache.get(cache_key)
-        
+
         if cached_policies is not None:
             return Response(cached_policies, status=status.HTTP_200_OK)
-        
+
         # If not in cache, fetch from database
         policies = Policy.objects.all()
         policy_list = []
-        
+
         for policy in policies:
             policy_list.append({
                 'policy_type': policy.policy_type,
                 'version': policy.version
             })
-        
+
         # Cache the result for 5 minutes
         cache.set(cache_key, policy_list, 300)
-        
+
         return Response(policy_list, status=status.HTTP_200_OK)
 
 
 class PolicyDetailView(APIView):
     """
     API View for retrieving policy by type.
-    
+
     GET /api/v1/policies/{policy_type}/
     """
-    
+
     def get(self, request, policy_type, format=None):
         """
         Retrieve policy by type with bilingual content.
-        
+
         Args:
             request: HTTP request
             policy_type: Policy type identifier
-            
+
         Returns:
             Response: JSON response with policy content
         """
         # Try to get from cache first
         cache_key = f'policy_{policy_type}'
         cached_policy = cache.get(cache_key)
-        
+
         if cached_policy is not None:
             return Response(cached_policy, status=status.HTTP_200_OK)
-        
+
         # If not in cache, fetch from database
         try:
             policy = Policy.objects.get(policy_type=policy_type)
-            
+
             policy_data = {
                 'policy_type': policy.policy_type,
                 'version': policy.version,
                 'content_en': policy.content_en,
                 'content_ml': policy.content_ml
             }
-            
+
             # Cache the result for 5 minutes
             cache.set(cache_key, policy_data, 300)
-            
+
             return Response(policy_data, status=status.HTTP_200_OK)
-            
+
         except Policy.DoesNotExist:
             return Response(
                 {'error': 'Policy not found'},
@@ -387,6 +389,8 @@ class SupportMessageView(APIView):
             if detected_intent == 'escalation':
                 conversation.escalated = True
                 conversation.escalation_reason = message_text
+                conversation.status = 'escalated'
+                conversation.escalated_at = timezone.now()
 
             # Save conversation
             conversation.message_count += 1
@@ -402,81 +406,87 @@ class SupportMessageView(APIView):
             )
 
             # Generate AI response if the message is from a user
+            # Block AI responses if conversation is escalated, assigned, or resolved
             ai_message_data = None
             if sender == 'user':
-                ai_response_text = None
-                ai_confidence = None
+                # Check if conversation is escalated - block AI responses
+                if conversation.status in ['escalated', 'assigned', 'resolved']:
+                    # No AI response for escalated/assigned/resolved conversations
+                    pass
+                else:
+                    ai_response_text = None
+                    ai_confidence = None
 
-                # Use LLM only for general intent, deterministic responses for others
-                if detected_intent == 'general':
-                    # Use LLM for general queries
-                    try:
-                        llm_client = get_llm_client()
-                        ai_response_text, ai_confidence, used_fallback = llm_client.generate_reply(
-                            message_text,
-                            response_language,
-                            conversation  # Pass conversation for context
-                        )
+                    # Use LLM only for general intent, deterministic responses for others
+                    if detected_intent == 'general':
+                        # Use LLM for general queries
+                        try:
+                            llm_client = get_llm_client()
+                            ai_response_text, ai_confidence, used_fallback = llm_client.generate_reply(
+                                message_text,
+                                response_language,
+                                conversation  # Pass conversation for context
+                            )
 
-                        if used_fallback:
-                            # Log that fallback was used
+                            if used_fallback:
+                                # Log that fallback was used
+                                import logging
+                                logger = logging.getLogger(__name__)
+                                logger.info("LLM fallback used for general intent")
+
+                        except Exception as e:
+                            # Fallback to template-based response on any error
                             import logging
                             logger = logging.getLogger(__name__)
-                            logger.info("LLM fallback used for general intent")
+                            logger.error(f"LLM error, using fallback: {str(e)}")
 
-                    except Exception as e:
-                        # Fallback to template-based response on any error
-                        import logging
-                        logger = logging.getLogger(__name__)
-                        logger.error(f"LLM error, using fallback: {str(e)}")
+                            ai_response_text = generate_response('general', response_language, {})
+                            ai_confidence = 0.5
+                    else:
+                        # Use deterministic template-based responses for non-general intents
+                        context = {}
+                        if detected_intent == 'order_status':
+                            # Try to find the latest order for this user
+                            latest_order = Order.objects.filter(user_id=conversation.user_id).first()
+                            if latest_order:
+                                context['status'] = latest_order.status
+                                if latest_order.estimated_delivery:
+                                    context['date'] = latest_order.estimated_delivery.strftime('%Y-%m-%d')
 
-                        ai_response_text = generate_response('general', response_language, {})
-                        ai_confidence = 0.5
-                else:
-                    # Use deterministic template-based responses for non-general intents
-                    context = {}
-                    if detected_intent == 'order_status':
-                        # Try to find the latest order for this user
-                        latest_order = Order.objects.filter(user_id=conversation.user_id).first()
-                        if latest_order:
-                            context['status'] = latest_order.status
-                            if latest_order.estimated_delivery:
-                                context['date'] = latest_order.estimated_delivery.strftime('%Y-%m-%d')
+                        elif detected_intent == 'policy':
+                            # Try to identify policy type from message
+                            all_policies = Policy.objects.all()
+                            for p in all_policies:
+                                if p.policy_type.lower() in message_text.lower():
+                                    context['policy_type'] = p.policy_type
+                                    break
 
-                    elif detected_intent == 'policy':
-                        # Try to identify policy type from message
-                        all_policies = Policy.objects.all()
-                        for p in all_policies:
-                            if p.policy_type.lower() in message_text.lower():
-                                context['policy_type'] = p.policy_type
-                                break
+                        # Generate deterministic response
+                        ai_response_text = generate_response(detected_intent, response_language, context)
+                        ai_confidence = 1.0  # Deterministic responses have high confidence
 
-                    # Generate deterministic response
-                    ai_response_text = generate_response(detected_intent, response_language, context)
-                    ai_confidence = 1.0  # Deterministic responses have high confidence
+                    # Create AI message
+                    ai_message = SupportMessage.objects.create(
+                        conversation=conversation,
+                        sender='ai',
+                        message=ai_response_text,
+                        language_detected=response_language,
+                        query_type=detected_intent,
+                        ai_confidence=ai_confidence
+                    )
 
-                # Create AI message
-                ai_message = SupportMessage.objects.create(
-                    conversation=conversation,
-                    sender='ai',
-                    message=ai_response_text,
-                    language_detected=response_language,
-                    query_type=detected_intent,
-                    ai_confidence=ai_confidence
-                )
+                    # Update conversation message count for AI message
+                    conversation.message_count += 1
+                    conversation.save()
 
-                # Update conversation message count for AI message
-                conversation.message_count += 1
-                conversation.save()
-
-                ai_message_data = {
-                    'message_id': ai_message.id,
-                    'message': ai_message.message,
-                    'sender': 'ai',
-                    'query_type': ai_message.query_type,
-                    'ai_confidence': ai_confidence,
-                    'created_at': ai_message.created_at.isoformat() + 'Z'
-                }
+                    ai_message_data = {
+                        'message_id': ai_message.id,
+                        'message': ai_message.message,
+                        'sender': 'ai',
+                        'query_type': ai_message.query_type,
+                        'ai_confidence': ai_confidence,
+                        'created_at': ai_message.created_at.isoformat() + 'Z'
+                    }
 
             # Return response with language and intent information
             response_data = {
@@ -490,7 +500,7 @@ class SupportMessageView(APIView):
                 'query_type': query_type,
                 'created_at': message.created_at.isoformat() + 'Z'
             }
-            
+
             if ai_message_data:
                 response_data['ai_response'] = ai_message_data
 
@@ -583,3 +593,213 @@ class SupportConversationView(APIView):
             conversations = SupportConversation.objects.all()
             serializer = SupportConversationSerializer(conversations, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class EscalateConversationView(APIView):
+    """
+    API View to escalate a conversation.
+
+    POST /api/v1/conversations/{conversation_id}/escalate/
+    """
+
+    def post(self, request, conversation_id, format=None):
+        """
+        Escalate a conversation to human agent.
+
+        Args:
+            request: HTTP request
+            conversation_id: Conversation ID to escalate
+
+        Returns:
+            Response: JSON response with updated conversation details
+        """
+        try:
+            conversation = SupportConversation.objects.get(session_id=conversation_id)
+
+            # Check if already escalated
+            if conversation.escalated:
+                return Response(
+                    {'error': 'Conversation is already escalated'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Escalate the conversation
+            conversation.escalated = True
+            conversation.status = 'escalated'
+            conversation.escalated_at = timezone.now()
+            conversation.escalation_reason = request.data.get('reason', 'Manually escalated by admin')
+            conversation.save()
+
+            return Response({
+                'conversation_id': conversation.session_id,
+                'status': conversation.status,
+                'escalated': conversation.escalated,
+                'escalated_at': conversation.escalated_at.isoformat() + 'Z',
+                'escalation_reason': conversation.escalation_reason
+            }, status=status.HTTP_200_OK)
+
+        except SupportConversation.DoesNotExist:
+            return Response(
+                {'error': 'Conversation not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+
+class AssignAgentView(APIView):
+    """
+    API View to assign an agent to an escalated conversation (Admin only).
+
+    POST /api/v1/conversations/{conversation_id}/assign/
+    """
+
+    def post(self, request, conversation_id, format=None):
+        """
+        Assign an agent to an escalated conversation.
+
+        Args:
+            request: HTTP request with agent_id data
+            conversation_id: Conversation ID to assign
+
+        Returns:
+            Response: JSON response with updated conversation details
+        """
+        try:
+            conversation = SupportConversation.objects.get(session_id=conversation_id)
+
+            # Check if conversation is escalated
+            if conversation.status != 'escalated':
+                return Response(
+                    {'error': 'Conversation must be escalated before assigning an agent'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Validate agent assignment data
+            serializer = AssignAgentSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            # Assign agent
+            conversation.assigned_agent = serializer.validated_data['agent_id']
+            conversation.status = 'assigned'
+            conversation.save()
+
+            return Response({
+                'conversation_id': conversation.session_id,
+                'status': conversation.status,
+                'assigned_agent': conversation.assigned_agent
+            }, status=status.HTTP_200_OK)
+
+        except SupportConversation.DoesNotExist:
+            return Response(
+                {'error': 'Conversation not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+
+class AgentMessageView(APIView):
+    """
+    API View for agents to reply to assigned conversations.
+
+    POST /api/v1/conversations/{conversation_id}/agent/messages/
+    """
+
+    def post(self, request, conversation_id, format=None):
+        """
+        Create an agent message for an assigned conversation.
+
+        Args:
+            request: HTTP request with message data
+            conversation_id: Conversation ID
+
+        Returns:
+            Response: JSON response with created message details
+        """
+        try:
+            conversation = SupportConversation.objects.get(session_id=conversation_id)
+
+            # Check if conversation is assigned
+            if conversation.status not in ['assigned', 'escalated']:
+                return Response(
+                    {'error': 'Conversation must be assigned or escalated to send agent messages'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Validate message data
+            serializer = AgentMessageSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            # Create agent message
+            message = SupportMessage.objects.create(
+                conversation=conversation,
+                sender='agent',
+                message=serializer.validated_data['message'],
+                language_detected=conversation.language,
+                query_type='general'
+            )
+
+            # Update conversation message count
+            conversation.message_count += 1
+            conversation.save()
+
+            return Response({
+                'message_id': message.id,
+                'conversation_id': conversation.session_id,
+                'sender': message.sender,
+                'message': message.message,
+                'created_at': message.created_at.isoformat() + 'Z'
+            }, status=status.HTTP_201_CREATED)
+
+        except SupportConversation.DoesNotExist:
+            return Response(
+                {'error': 'Conversation not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+
+class ResolveConversationView(APIView):
+    """
+    API View to resolve a conversation (Admin only).
+
+    POST /api/v1/conversations/{conversation_id}/resolve/
+    """
+
+    def post(self, request, conversation_id, format=None):
+        """
+        Resolve a conversation.
+
+        Args:
+            request: HTTP request
+            conversation_id: Conversation ID to resolve
+
+        Returns:
+            Response: JSON response with updated conversation details
+        """
+        try:
+            conversation = SupportConversation.objects.get(session_id=conversation_id)
+
+            # Check if conversation is already resolved
+            if conversation.status == 'resolved':
+                return Response(
+                    {'error': 'Conversation is already resolved'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Resolve the conversation
+            conversation.status = 'resolved'
+            conversation.resolved_at = timezone.now()
+            conversation.ended_at = timezone.now()
+            conversation.save()
+
+            return Response({
+                'conversation_id': conversation.session_id,
+                'status': conversation.status,
+                'resolved_at': conversation.resolved_at.isoformat() + 'Z',
+                'ended_at': conversation.ended_at.isoformat() + 'Z'
+            }, status=status.HTTP_200_OK)
+
+        except SupportConversation.DoesNotExist:
+            return Response(
+                {'error': 'Conversation not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
