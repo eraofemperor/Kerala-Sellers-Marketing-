@@ -46,19 +46,25 @@ class ReturnRequestAdmin(admin.ModelAdmin):
 
 @admin.register(SupportConversation)
 class SupportConversationAdmin(admin.ModelAdmin):
-    list_display = ['session_id', 'user_id', 'language', 'message_count', 'started_at', 'escalated']
-    list_filter = ['language', 'escalated', 'started_at']
-    search_fields = ['session_id', 'user_id']
-    readonly_fields = ['session_id', 'started_at']
+    list_display = ['session_id', 'user_id', 'language', 'status', 'message_count', 'escalated', 'assigned_agent', 'started_at']
+    list_filter = ['language', 'status', 'escalated', 'started_at']
+    search_fields = ['session_id', 'user_id', 'assigned_agent']
+    readonly_fields = ['session_id', 'started_at', 'escalated_at', 'resolved_at']
     ordering = ['-started_at']
     date_hierarchy = 'started_at'
-    
+
     fieldsets = (
         ('Conversation Information', {
-            'fields': ('session_id', 'user_id', 'language', 'message_count')
+            'fields': ('session_id', 'user_id', 'language', 'status', 'message_count')
         }),
         ('Escalation', {
-            'fields': ('escalated', 'escalation_reason')
+            'fields': ('escalated', 'escalation_reason', 'escalated_at')
+        }),
+        ('Agent Assignment', {
+            'fields': ('assigned_agent',)
+        }),
+        ('Resolution', {
+            'fields': ('resolved_at',)
         }),
         ('Timestamps', {
             'fields': ('started_at', 'ended_at')
@@ -74,7 +80,7 @@ class SupportMessageAdmin(admin.ModelAdmin):
     readonly_fields = ['created_at']
     ordering = ['created_at']
     date_hierarchy = 'created_at'
-    
+
     fieldsets = (
         ('Message Information', {
             'fields': ('conversation', 'sender', 'message')
